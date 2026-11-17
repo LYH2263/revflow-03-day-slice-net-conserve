@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from app.db import connect, rows_to_dicts
+from app.modules.day_slice_net import rebuild_account_days
 
 
 def _now() -> str:
@@ -97,7 +98,8 @@ def list_verify_reports() -> list[dict]:
 
 
 def run_settle() -> dict:
-    """底座冒烟：按账户汇总正向−已匹配冲正；无原单/超额冲正进隔离；余额写账户。"""
+    """净额归并：待归并正向−已匹配冲正配平；无原单/超额冲正进隔离；
+    随后按账户从已归并流水全量重建日贡献（物化分日净额），余额 = Σ 日贡献。"""
     with connect() as conn:
         now = _now()
         cur = conn.execute(
@@ -125,10 +127,6 @@ def run_settle() -> dict:
         used: dict[str, int] = {f["entry_key"]: 0 for f in forwards}
         settled = 0
         quarantined = 0
-        account_net: dict[int, int] = {}
-
-        for f in forwards:
-            account_net[f["account_id"]] = account_net.get(f["account_id"], 0) + f["amount_cents"]
 
         for r in reversals:
             target = r.get("target_entry_key")
@@ -183,7 +181,6 @@ def run_settle() -> dict:
                 continue
 
             used[target] += r["amount_cents"]
-            account_net[r["account_id"]] = account_net.get(r["account_id"], 0) - r["amount_cents"]
             conn.execute(
                 "UPDATE ledger_entries SET status = '已归并', settle_run_id = ? WHERE id = ?",
                 (run_id, r["id"]),
@@ -197,15 +194,22 @@ def run_settle() -> dict:
             )
             settled += 1
 
+        # 全量重建：凡有已归并流水的账户，日贡献整表重衍、余额 = Σ 日贡献（自愈任何漂移）
         net_total = 0
-        for acc_id, net in account_net.items():
+        acc_ids = [
+            r["account_id"]
+            for r in conn.execute(
+                "SELECT DISTINCT account_id FROM ledger_entries WHERE status = '已归并'"
+            ).fetchall()
+        ]
+        for acc_id in acc_ids:
+            acct_total = rebuild_account_days(conn, acc_id, settle_run_id=run_id, now=now)
             conn.execute(
                 "UPDATE accounts SET balance_cents = ?, last_settle_run_id = ? WHERE id = ?",
-                (net, run_id, acc_id),
+                (acct_total, run_id, acc_id),
             )
-            net_total += net
+            net_total += acct_total
 
-        # 无流水账户余额清零（本轮未触及则保持；底座简化：仅写触及账户）
         finished = _now()
         conn.execute(
             """

@@ -58,6 +58,33 @@ CREATE TABLE IF NOT EXISTS verify_reports (
   detail_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+-- 日切片净额：独立日贡献表（账户、入账日、净额分、重算运行 id）
+CREATE TABLE IF NOT EXISTS day_contributions (
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  day TEXT NOT NULL,
+  net_cents INTEGER NOT NULL,
+  forward_cents INTEGER NOT NULL DEFAULT 0,
+  reversal_cents INTEGER NOT NULL DEFAULT 0,
+  settle_run_id INTEGER,
+  recalc_run_id INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, day)
+);
+CREATE TABLE IF NOT EXISTS day_recalc_runs (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  day TEXT NOT NULL,
+  status TEXT NOT NULL,
+  forward_cents INTEGER NOT NULL DEFAULT 0,
+  reversal_cents INTEGER NOT NULL DEFAULT 0,
+  net_cents INTEGER NOT NULL DEFAULT 0,
+  prev_net_cents INTEGER NOT NULL DEFAULT 0,
+  balance_before_cents INTEGER NOT NULL DEFAULT 0,
+  balance_after_cents INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  report_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
 """
 
 
